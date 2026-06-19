@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
 import pdfplumber
 import io
 from sentence_transformers import SentenceTransformer
@@ -11,6 +12,15 @@ from groq import Groq
 load_dotenv()
 
 app = FastAPI()
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 model = SentenceTransformer('all-MiniLM-L6-v2')
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
