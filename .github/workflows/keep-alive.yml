@@ -1,0 +1,12 @@
+name: Keep Backend Alive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend
+        run: curl --max-time 90 https://ai-resume-analyzer-112k.onrender.com/ || true
