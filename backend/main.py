@@ -1,18 +1,16 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import pdfplumber
 import io
-from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-import re
 import os
 from dotenv import load_dotenv
 from groq import Groq
 
 load_dotenv()
 
-app = FastAPI()
-
+app = FastAPI(title="AI Resume Analyzer")
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,8 +20,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-model = SentenceTransformer('all-MiniLM-L6-v2')
-groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 
 @app.get("/")
@@ -31,7 +29,7 @@ def home():
     return {"message": "Backend is running!"}
 
 
-def extract_text_from_pdf(file_bytes):
+def extract_text_from_pdf(file_bytes: bytes) -> str:
     pdf_file = io.BytesIO(file_bytes)
     extracted_text = ""
     with pdfplumber.open(pdf_file) as pdf:
@@ -59,16 +57,15 @@ SKILL_KEYWORDS = [
 ]
 
 
-def get_keywords(text):
+def get_keywords(text: str) -> set:
     text_lower = text.lower()
-    found = set()
-    for skill in SKILL_KEYWORDS:
-        if skill in text_lower:
-            found.add(skill)
-    return found
+    return {skill for skill in SKILL_KEYWORDS if skill in text_lower}
 
 
 def get_llm_suggestions(resume_text, job_description, missing_keywords):
+    if groq_client is None:
+        return "AI suggestions unavailable: GROQ_API_KEY not set."
+
     keywords_str = ", ".join(missing_keywords) if missing_keywords else "none"
 
     prompt = f"""You are an expert resume reviewer helping a student improve their resume for ATS systems.
@@ -85,13 +82,15 @@ Give exactly 4 short, specific, actionable suggestions to improve this resume fo
 Each suggestion should be 1-2 sentences. Focus on: missing skills, weak bullet points, and ATS optimization.
 Format as a numbered list, nothing else before or after."""
 
-    response = groq_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=500
-    )
-
-    return response.choices[0].message.content
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=500
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"AI suggestions unavailable: {str(e)}"
 
 
 @app.post("/analyze")
@@ -99,13 +98,21 @@ async def analyze_resume(
     file: UploadFile = File(...),
     job_description: str = Form(...)
 ):
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+
+    if not job_description.strip():
+        raise HTTPException(status_code=400, detail="Job description cannot be empty.")
+
     contents = await file.read()
     resume_text = extract_text_from_pdf(contents)
 
-    resume_embedding = model.encode([resume_text])
-    jd_embedding = model.encode([job_description])
+    if not resume_text.strip():
+        raise HTTPException(status_code=400, detail="Could not extract text from PDF. Try a different file.")
 
-    similarity = cosine_similarity(resume_embedding, jd_embedding)[0][0]
+    vectorizer = TfidfVectorizer(stop_words='english')
+    tfidf_matrix = vectorizer.fit_transform([resume_text, job_description])
+    similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
     match_score = round(float(similarity) * 100, 2)
 
     resume_keywords = get_keywords(resume_text)
@@ -120,6 +127,8 @@ async def analyze_resume(
         "suggestions": suggestions,
         "resume_text_length": len(resume_text)
     }
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
