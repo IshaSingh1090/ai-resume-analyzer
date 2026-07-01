@@ -110,14 +110,24 @@ async def analyze_resume(
     if not resume_text.strip():
         raise HTTPException(status_code=400, detail="Could not extract text from PDF. Try a different file.")
 
+    # TF-IDF similarity (captures general content/phrasing overlap)
     vectorizer = TfidfVectorizer(stop_words='english')
     tfidf_matrix = vectorizer.fit_transform([resume_text, job_description])
-    similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
-    match_score = round(float(similarity) * 100, 2)
+    tfidf_similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
 
+    # Keyword overlap (captures actual skill matching)
     resume_keywords = get_keywords(resume_text)
     jd_keywords = get_keywords(job_description)
     missing_keywords = list(jd_keywords - resume_keywords)
+
+    if jd_keywords:
+        keyword_overlap = len(jd_keywords & resume_keywords) / len(jd_keywords)
+    else:
+        keyword_overlap = tfidf_similarity  # fallback if JD has no recognized skill keywords
+
+    # Blended score: keyword match weighted higher than raw text similarity
+    final_score = (0.4 * tfidf_similarity) + (0.6 * keyword_overlap)
+    match_score = round(float(final_score) * 100, 2)
 
     suggestions = get_llm_suggestions(resume_text, job_description, missing_keywords)
 
